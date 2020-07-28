@@ -335,7 +335,7 @@ impl Client {
     /// # }
     /// ```
     pub fn new<H: EventHandler + 'static>(token: impl AsRef<str>, handler: H) -> Result<Self> {
-        Self::new_with_extras(token, |e| e.event_handler(handler))
+        Self::new_with_more_extras(token, |e| e.event_handler(handler), true)
     }
 
     /// Creates a client with an optional Handler. If you pass `None`, events are never parsed, but
@@ -388,6 +388,86 @@ impl Client {
             token.to_string()
         } else {
             format!("Bot {}", token)
+        };
+
+        let mut extras = Extras::default();
+
+        f(&mut extras);
+
+        let Extras {
+            event_handler,
+            raw_event_handler,
+            #[cfg(feature = "cache")]
+            timeout,
+            guild_subscriptions,
+        } = extras;
+
+        let http = Http::new_with_token(&token);
+
+        let name = "serenity client".to_owned();
+        let threadpool = ThreadPool::with_name(name, 5);
+        let url = Arc::new(Mutex::new(http.get_gateway()?.url));
+        let data = Arc::new(RwLock::new(ShareMap::custom()));
+
+        #[cfg(feature = "framework")]
+        let framework = Arc::new(Mutex::new(None));
+        #[cfg(feature = "voice")]
+        let voice_manager = Arc::new(Mutex::new(ClientVoiceManager::new(
+            0,
+            UserId(0),
+        )));
+
+        let cache_and_http = Arc::new(CacheAndHttp {
+            #[cfg(feature = "cache")]
+            cache: CacheRwLock::default(),
+            #[cfg(feature = "cache")]
+            update_cache_timeout: timeout,
+            http: Arc::new(http),
+            __nonexhaustive: (),
+        });
+
+        let (shard_manager, shard_manager_worker) = {
+            ShardManager::new(ShardManagerOptions {
+                data: &data,
+                event_handler: &event_handler,
+                raw_event_handler: &raw_event_handler,
+                #[cfg(feature = "framework")]
+                framework: &framework,
+                shard_index: 0,
+                shard_init: 0,
+                shard_total: 0,
+                threadpool: threadpool.clone(),
+                #[cfg(feature = "voice")]
+                voice_manager: &voice_manager,
+                ws_url: &url,
+                cache_and_http: &cache_and_http,
+                guild_subscriptions,
+            })
+        };
+
+        Ok(Client {
+            ws_uri: url,
+            #[cfg(feature = "framework")]
+            framework,
+            data,
+            shard_manager,
+            shard_manager_worker,
+            threadpool,
+            #[cfg(feature = "voice")]
+            voice_manager,
+            cache_and_http,
+        })
+    }
+
+    pub fn new_with_more_extras(token: impl AsRef<str>, f: impl FnOnce(&mut Extras) -> &mut Extras, bot: bool) -> Result<Self>
+    {
+        let token = token.as_ref().trim();
+
+        let token = if bot && !token.starts_with("Bot ") {
+            format!("Bot {}", token)
+            
+        } else {
+            token.to_string()
         };
 
         let mut extras = Extras::default();
